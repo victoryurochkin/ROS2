@@ -78,7 +78,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -euo pipefail; \
     apt-get update; \
-    source /opt/ros/${ROS_DISTRO}/setup.bash; \
+    # Скрипты ROS не совместимы с set -u: setup.bash читает
+    # AMENT_TRACE_SETUP_FILES, которая по умолчанию не задана.
+    set +u; source /opt/ros/${ROS_DISTRO}/setup.bash; set -u; \
     rosdep install --from-paths src --ignore-src -y \
         --rosdistro "${ROS_DISTRO}" \
         --skip-keys "livox_ros_driver livox_ros_driver2 fastcdr rti-connext-dds-6.0.1" \
@@ -100,7 +102,9 @@ RUN set -euo pipefail; \
 ENV CUDACXX=${CUDA_HOME}/bin/nvcc
 RUN --mount=type=cache,target=/root/.ccache \
     set -euo pipefail; \
-    source /opt/ros/${ROS_DISTRO}/setup.bash; \
+    # Скрипты ROS не совместимы с set -u: setup.bash читает
+    # AMENT_TRACE_SETUP_FILES, которая по умолчанию не задана.
+    set +u; source /opt/ros/${ROS_DISTRO}/setup.bash; set -u; \
     colcon build \
         --merge-install \
         --parallel-workers "${PARALLEL_WORKERS}" \

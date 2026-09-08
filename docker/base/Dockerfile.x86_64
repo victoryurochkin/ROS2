@@ -79,7 +79,9 @@ ENV CUDA_HOME=/usr/local/cuda \
 # и что код действительно скомпилирован под нужные SM-архитектуры.
 COPY tests/cuda_verify /opt/verify/src/cuda_verify
 RUN set -euo pipefail; \
-    source /opt/ros/${ROS_DISTRO}/setup.bash; \
+    # Скрипты ROS не совместимы с set -u: setup.bash читает
+    # AMENT_TRACE_SETUP_FILES, которая по умолчанию не задана.
+    set +u; source /opt/ros/${ROS_DISTRO}/setup.bash; set -u; \
     cd /opt/verify; \
     colcon build --merge-install \
         --parallel-workers "${PARALLEL_WORKERS}" \
