@@ -6,7 +6,7 @@
 # аргументами из packages/<name>.env:
 #
 #   docker buildx build -f docker/package/Dockerfile \
-#     --build-arg BASE_IMAGE=ghcr.io/OWNER/ros2-cuda-base:jetson-agx-orin-jp62 \
+#     --build-arg BASE_IMAGE=ghcr.io/victoryurochkin/ros2-cuda-base:jetson-agx-orin-jp62 \
 #     --build-arg PKG_NAME=fast_lio2 \
 #     --build-arg PKG_REPO_URL=https://github.com/hku-mars/FAST_LIO \
 #     --build-arg PKG_REF=ROS2 \

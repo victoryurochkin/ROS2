@@ -48,7 +48,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: ${{ github.repository_owner }}
-  PACKAGE: ${{ inputs.package || 'fast_lio2' }}
+  PACKAGE: ${{ github.event.inputs.package || 'fast_lio2' }}
 
 jobs:
   plan:
@@ -93,7 +93,7 @@ jobs:
       max-parallel: 3
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
-    name: ${{ env.PACKAGE }} · ${{ matrix.platform }} · ${{ matrix.mode }}
+    name: ${{ matrix.platform }} · ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v4
 

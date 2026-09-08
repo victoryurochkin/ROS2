@@ -3,7 +3,7 @@
 # Проверка собранного образа. Закрывает пункт ТЗ «подтверждение наличия CUDA
 # в собранных образах» и используется как тестовая стадия пайплайна.
 #
-#   ./scripts/verify-image.sh --image ghcr.io/OWNER/fast_lio2:jetson-agx-orin-jp62-cross \
+#   ./scripts/verify-image.sh --image ghcr.io/victoryurochkin/fast_lio2:jetson-agx-orin-jp62-cross \
 #                             --platform jetson-agx-orin-jp62 --package fast_lio2
 #
 # Проверки делятся на две группы:
