@@ -1,0 +1,6 @@
+verify-*.md
+summary.md
+*.log
+build/
+install/
+log/

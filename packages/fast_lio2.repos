@@ -1,0 +1,7 @@
+# Зависимости FAST-LIO2 (ветка ROS2).
+# Именно livox_ros_driver2, а не livox_ros_driver: первый не совместим с ROS 2.
+repositories:
+  livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: master

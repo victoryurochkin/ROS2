@@ -1,0 +1,152 @@
+name: base-images
+
+# ============================================================================
+# Сборка и публикация трёх базовых образов (п. 3.2 ТЗ).
+#
+# Базовый образ для каждой платформы собирается ОДИН раз и публикуется под
+# тегом ros2-cuda-base:<platform-id>. Способ сборки (нативно на ARM-раннере
+# или кросс через QEMU) выбирается входным параметром: результат
+# побайтово-эквивалентен по содержимому, отличается только время сборки.
+# Демонстрация обоих способов сборки ARM64 (п. 3.4) вынесена в
+# package-build.yml, где оба артефакта публикуются рядом и сравниваются.
+# ============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/base/**'
+      - 'docker/common/**'
+      - 'platforms/**'
+      - 'tests/cuda_verify/**'
+      - 'scripts/**'
+      - '.github/workflows/base-images.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      runner_kind:
+        description: 'Где собирать ARM64-образы'
+        type: choice
+        default: github-arm
+        options: [github-arm, qemu-cross, self-hosted-jetson]
+      platforms:
+        description: 'Список платформ через запятую (пусто = все)'
+        type: string
+        default: ''
+      no_cache:
+        description: 'Сборка без кеша'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # --------------------------------------------------------------------
+  # Матрица собирается динамически из platforms/*.env — добавление новой
+  # платформы не требует правки этого файла.
+  # --------------------------------------------------------------------
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      include: ${{ steps.gen.outputs.include }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: gen
+        name: Сформировать матрицу из platforms/*.env
+        env:
+          RUNNER_KIND: ${{ inputs.runner_kind || 'github-arm' }}
+          ONLY: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          entries='[]'
+          for f in platforms/*.env; do
+            id="$(basename "$f" .env)"
+            if [ -n "${ONLY}" ] && ! echo ",${ONLY}," | grep -q ",${id},"; then continue; fi
+            # shellcheck disable=SC1090
+            set -a; source "$f"; set +a
+            if [ "${DOCKER_PLATFORM}" = "linux/amd64" ]; then
+              runner='"ubuntu-24.04"'; mode=native
+            else
+              case "${RUNNER_KIND}" in
+                github-arm)         runner="\"${NATIVE_RUNNER}\"";  mode=native ;;
+                qemu-cross)         runner='"ubuntu-24.04"';        mode=cross  ;;
+                self-hosted-jetson) runner="[$(echo "${SELF_HOSTED_RUNNER}" | sed 's/[^,]*/"&"/g')]"; mode=native ;;
+              esac
+            fi
+            entries="$(jq -c --argjson r "${runner}" \
+                             --arg id "${id}" --arg mode "${mode}" \
+                             --arg desc "${PLATFORM_DESCRIPTION}" \
+                             '. + [{platform:$id, runner:$r, mode:$mode, description:$desc}]' \
+                        <<<"${entries}")"
+          done
+          echo "include=${entries}" >> "$GITHUB_OUTPUT"
+          jq . <<<"${entries}"
+
+  build:
+    needs: matrix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    name: ${{ matrix.platform }} (${{ matrix.mode }})
+    steps:
+      - uses: actions/checkout@v4
+
+      # Базовые образы с CUDA Toolkit занимают 6-12 ГБ на слой. Штатный
+      # раннер отдаёт ~14 ГБ свободного места — этого не хватает.
+      - name: Освободить место на раннере
+        if: ${{ !startsWith(matrix.runner, 'self-hosted') }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Настроить QEMU
+        if: matrix.mode == 'cross'
+        run: ./scripts/setup-qemu.sh
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Собрать и опубликовать базовый образ
+        run: |
+          ./scripts/build-base.sh \
+            --platform "${{ matrix.platform }}" \
+            --push --no-load \
+            --tag "${GITHUB_SHA::7}" \
+            ${{ inputs.no_cache && '--no-cache' || '' }}
+
+      # Проверка базового образа: nvcc, ROS, наличие device-кода нужной SM.
+      # На arm64-раннере образ запускается нативно, на x86 — под QEMU.
+      - name: Проверить образ
+        run: |
+          ./scripts/verify-image.sh \
+            --image "ghcr.io/$(echo '${{ github.repository_owner }}' | tr 'A-Z' 'a-z')/ros2-cuda-base:${{ matrix.platform }}" \
+            --platform "${{ matrix.platform }}" \
+            --report "verify-${{ matrix.platform }}.md"
+          cat "verify-${{ matrix.platform }}.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-base-${{ matrix.platform }}
+          path: verify-*.md
+          if-no-files-found: ignore

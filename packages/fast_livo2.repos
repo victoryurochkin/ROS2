@@ -1,0 +1,12 @@
+# Зависимости FAST-LIVO2 (ROS 2-порт).
+repositories:
+  livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: master
+  # ament-версия vikit. Оригинал xuankuzcr/rpg_vikit — catkin-проект,
+  # под ROS 2 не собирается.
+  rpg_vikit:
+    type: git
+    url: https://github.com/Robotic-Developer-Road/rpg_vikit.git
+    version: main

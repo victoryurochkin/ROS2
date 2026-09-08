@@ -1,0 +1,177 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# Базовый образ: NVIDIA Jetson (Orin family) + CUDA + ROS 2
+# ----------------------------------------------------------------------------
+# ОДИН Dockerfile обслуживает обе Jetson-платформы (AGX Orin JP6.2.2 и
+# Orin Nano JP7.2). Разница вынесена в build-args, значения которых приходят
+# из platforms/*.env. Добавление новой ревизии JetPack = новый .env, не новый
+# Dockerfile.
+#
+# Почему не FROM nvcr.io/nvidia/l4t-jetpack:
+#   * последний опубликованный тег l4t-jetpack — r36.4.0 (JP 6.1);
+#     под r36.5.0 (JP 6.2.2) и под r39.2 (JP 7.2) официальных образов нет;
+#   * l4t-jetpack тянет ~8 ГБ, из которых нам нужен только CUDA-toolkit;
+#   * сборка из ubuntu:XX.04 + apt-репозиторий Jetson даёт точное совпадение
+#     версий с устройством и полностью воспроизводима.
+# Альтернативный путь (FROM l4t-jetpack) описан в docs/01-architecture.md.
+# ============================================================================
+ARG BASE_FROM=ubuntu:22.04
+FROM ${BASE_FROM}
+
+ARG L4T_SUITE=r36.5
+ARG L4T_SOC=t234
+ARG L4T_RELEASE_MAJOR=36
+ARG L4T_RELEASE_MINOR=5.0
+ARG JETSON_CUDA_PACKAGES="cuda-toolkit-12-6 libcudnn9-dev-cuda-12 libnvinfer-dev libnvinfer-plugin-dev"
+ARG CUDA_HOME=/usr/local/cuda-12.6
+ARG CUDA_ARCHITECTURES=87
+ARG ROS_DISTRO=humble
+ARG ROS_BASE_PACKAGE=ros-humble-ros-base
+ARG ROS_BUILD_MODE=binary
+ARG PARALLEL_WORKERS=2
+ARG PLATFORM_ID=jetson
+ARG PLATFORM_DESCRIPTION="NVIDIA Jetson + CUDA + ROS 2"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=Etc/UTC
+
+# --- 1. Базовые системные пакеты ------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg2 lsb-release locales tzdata \
+        build-essential cmake ninja-build git wget unzip pkg-config \
+        python3-pip python3-dev python3-setuptools \
+    && :
+
+# --- 2. Подключение apt-репозитория NVIDIA Jetson -------------------------
+# ВАЖНО: /etc/nv_tegra_release создаётся ВРУЧНУЮ до установки L4T-пакетов.
+# Их postinst-скрипты читают этот файл, чтобы определить версию BSP. При
+# сборке контейнера не на Jetson (кросс-сборка на x86) файла нет и установка
+# падает. Подделка файла — штатный приём NVIDIA-сообщества для сборки
+# Jetson-образов на десктопе.
+RUN set -euo pipefail; \
+    curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-l4t-keyring.gpg; \
+    printf 'deb [signed-by=/usr/share/keyrings/nvidia-l4t-keyring.gpg] https://repo.download.nvidia.com/jetson/common %s main\n' \
+        "${L4T_SUITE}" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list; \
+    printf 'deb [signed-by=/usr/share/keyrings/nvidia-l4t-keyring.gpg] https://repo.download.nvidia.com/jetson/%s %s main\n' \
+        "${L4T_SOC}" "${L4T_SUITE}" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list; \
+    printf '# R%s (release), REVISION: %s, GCID: 00000000, BOARD: generic, EABI: aarch64, DATE: Thu Jan  1 00:00:00 UTC 1970\n' \
+        "${L4T_RELEASE_MAJOR}" "${L4T_RELEASE_MINOR}" > /etc/nv_tegra_release
+
+# --- 3. CUDA Toolkit / cuDNN / TensorRT из репозитория JetPack ------------
+# Ставим ТОЛЬКО dev-компоненты. Рантайм-библиотеки, привязанные к железу
+# (nvidia-l4t-core, libnvidia-*), на устройстве подмонтирует NVIDIA Container
+# Runtime из хоста — класть их в образ нельзя, это ломает совместимость.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -euo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${JETSON_CUDA_PACKAGES}; \
+    ln -sfn "${CUDA_HOME}" /usr/local/cuda; \
+    echo "${CUDA_HOME}/lib64" > /etc/ld.so.conf.d/nvidia-cuda.conf; \
+    ldconfig
+
+ENV CUDA_HOME=${CUDA_HOME} \
+    PATH=${CUDA_HOME}/bin:${PATH} \
+    LD_LIBRARY_PATH=${CUDA_HOME}/lib64:/usr/lib/aarch64-linux-gnu/tegra:${LD_LIBRARY_PATH}
+
+# Ранняя проверка: если nvcc не собрался/не работает под QEMU — падаем здесь,
+# а не через 40 минут на сборке ROS-пакета.
+RUN nvcc --version && echo "nvcc OK"
+
+# --- 4. Библиотеки, нужные ROS-пакетам SLAM/LIO ---------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libeigen3-dev libgoogle-glog-dev libgflags-dev \
+        libboost-all-dev libyaml-cpp-dev libtbb-dev \
+        libpcl-dev libopencv-dev libapr1-dev \
+    && :
+
+# --- 5. ROS 2 --------------------------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -euo pipefail; \
+    . /etc/os-release; \
+    ROS_APT_SOURCE_VERSION="$(curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
+        | grep -F '"tag_name"' | head -n1 | awk -F'"' '{print $4}')"; \
+    curl -fsSL -o /tmp/ros2-apt-source.deb \
+        "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.${VERSION_CODENAME}_all.deb"; \
+    apt-get update && apt-get install -y /tmp/ros2-apt-source.deb && rm -f /tmp/ros2-apt-source.deb
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -euo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        python3-colcon-common-extensions python3-rosdep python3-vcstool; \
+    if [ "${ROS_BUILD_MODE}" = "binary" ]; then \
+        apt-get install -y --no-install-recommends \
+            ${ROS_BASE_PACKAGE} \
+            ros-${ROS_DISTRO}-pcl-conversions \
+            ros-${ROS_DISTRO}-pcl-ros \
+            ros-${ROS_DISTRO}-tf2-eigen \
+            ros-${ROS_DISTRO}-cv-bridge; \
+    fi; \
+    rosdep init 2>/dev/null || true; \
+    rosdep update --rosdistro "${ROS_DISTRO}" || true
+
+# --- 5b. ROS 2 из исходников (только ROS_BUILD_MODE=source) ---------------
+# Нужно, если на Ubuntu 24.04 (JetPack 7) требуется именно Humble:
+#   docker build --build-arg ROS_BUILD_MODE=source --build-arg ROS_DISTRO=humble ...
+# Долго (40-60 мин нативно, кратно дольше под QEMU) — по умолчанию выключено.
+RUN if [ "${ROS_BUILD_MODE}" = "source" ]; then set -euo pipefail; \
+      apt-get update && apt-get install -y --no-install-recommends \
+        python3-flake8 python3-pytest python3-numpy python3-lark \
+        libacl1-dev libtinyxml2-dev libasio-dev libssl-dev \
+        python3-rosinstall-generator; \
+      mkdir -p /opt/ros_src/src; cd /opt/ros_src; \
+      rosinstall_generator ros_base --rosdistro "${ROS_DISTRO}" --deps \
+        --exclude RPP > ros2.repos; \
+      vcs import --input ros2.repos src; \
+      rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+        --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers" || true; \
+      colcon build --merge-install --install-base "/opt/ros/${ROS_DISTRO}" \
+        --parallel-workers "${PARALLEL_WORKERS}" \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF; \
+      rm -rf /opt/ros_src/build /opt/ros_src/log; \
+    fi
+
+# --- 6. Окружение ----------------------------------------------------------
+ENV CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+    ROS_DISTRO=${ROS_DISTRO} \
+    PLATFORM_ID=${PLATFORM_ID} \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+# --- 7. Пакет-верификатор CUDA --------------------------------------------
+COPY tests/cuda_verify /opt/verify/src/cuda_verify
+RUN set -euo pipefail; \
+    source /opt/ros/${ROS_DISTRO}/setup.bash; \
+    cd /opt/verify; \
+    colcon build --merge-install \
+        --parallel-workers "${PARALLEL_WORKERS}" \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+                     -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"; \
+    rm -rf build log
+
+COPY docker/common/ros_entrypoint.sh /ros_entrypoint.sh
+RUN chmod +x /ros_entrypoint.sh
+
+LABEL org.opencontainers.image.title="ros2-cuda-base:${PLATFORM_ID}" \
+      org.opencontainers.image.description="${PLATFORM_DESCRIPTION}" \
+      org.opencontainers.image.source="https://github.com/victoryurochkin/ROS2" \
+      ru.armmeh.platform="${PLATFORM_ID}" \
+      ru.armmeh.l4t-suite="${L4T_SUITE}" \
+      ru.armmeh.ros-distro="${ROS_DISTRO}" \
+      ru.armmeh.cuda-architectures="${CUDA_ARCHITECTURES}"
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]
