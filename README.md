@@ -117,6 +117,35 @@ docker pull ghcr.io/victoryurochkin/ros2-cuda-base:jetson-agx-orin-jp62
 
 Для arm64-образа на x86-хосте предварительно нужен `make qemu`.
 
+### Образы пакета
+
+Пример стороннего ROS 2-пакета — [FAST-LIO2](https://github.com/hku-mars/FAST_LIO)
+(ветка `ROS2`), собранный из upstream. Прогон:
+[package-build #9](https://github.com/victoryurochkin/ROS2/actions/runs/34337599884).
+
+| Образ | Способ сборки | Статус |
+|---|---|---|
+| `fast_lio2:x86_64-cuda-native` | нативно на x86 | собран |
+| `fast_lio2:jetson-agx-orin-jp62-native` | нативно на ARM64-раннере | собран |
+| `fast_lio2:jetson-agx-orin-jp62-cross` | кросс на x86 через QEMU | собран |
+| Orin Nano / JetPack 7 | — | платформа исключена, см. ниже |
+
+Внутри образа проверяются не только CUDA и ROS, но и наличие исполняемого
+файла `fastlio_mapping` и точная ревизия исходников:
+
+```
+OK  device-код в бинарнике: найдены архитектуры: sm_87
+OK  исходники пакета: a4743b09... Merge pull request #381 from mfassler/ROS2
+OK  исполняемый файл fastlio_mapping: найден
+```
+
+**JetPack 7 для этого пакета исключён осознанно.** `hku-mars/FAST_LIO`
+фиксирует стандарт C++14, а заголовки `rclcpp` в ROS 2 Jazzy требуют C++17
+(`std::is_convertible_v`). Проверено двумя независимыми прогонами — нативным и
+кросс. Платформа отсекается на этапе планирования матрицы по полю
+`SUPPORTED_ROS_DISTROS` в манифесте пакета, с пояснением в логе job'а `plan`.
+Разбор — [docs/04-troubleshooting.md](docs/04-troubleshooting.md).
+
 ## Документация
 
 * [00 — Соответствие ТЗ (карта: требование → реализация)](docs/00-checklist.md)
