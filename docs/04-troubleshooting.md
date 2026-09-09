@@ -1,24 +1,46 @@
 # 04 — Отладка и типовые проблемы
 
-Собрано по итогам работы с этой связкой; почти каждый пункт стоил времени.
+Собрано по итогам работы с этой связкой. Каждый пункт воспроизводился на
+практике; где причина внешняя, приведены ссылки на первоисточник.
 
 ---
 
 ## QEMU и кросс-сборка
 
-### `qemu: uncaught target signal 11 (Segmentation fault)`
+### `ldconfig` падает с SIGSEGV под QEMU (Ubuntu 22.04)
 
-Падает `nvcc`, `cc1plus` или линковка PCL посреди кросс-сборки.
+Симптом — сборка обрывается на установке пакетов или в pre-build скрипте:
 
-Причина — ошибки трансляции в старых сборках QEMU. Проверьте, какая версия
-зарегистрирована:
-
-```bash
-docker run --privileged --rm tonistiigi/binfmt
+```
+Processing triggers for libc-bin (2.35-0ubuntu3.14) ...
+Segmentation fault (core dumped)
+dpkg: error processing package libc-bin (--configure):
+ installed libc-bin package post-installation script subprocess returned error exit status 139
 ```
 
-Лечение — перерегистрация на фиксированной версии (это и делает
-`scripts/setup-qemu.sh`):
+Причина — дефект эмуляции, а не сборки. Установлено экспериментально:
+
+| Основа | glibc | `ldconfig` под QEMU | На нативном ARM |
+|---|---|---|---|
+| Ubuntu 22.04 (jammy) | 2.35 | **SIGSEGV** | проходит |
+| Ubuntu 24.04 (noble) | 2.39 | проходит | проходит |
+
+То есть страдает только пара «qemu-aarch64 + glibc 2.35». Кеш `ld.so` для
+сборки не нужен: пути к библиотекам CUDA задаются через `LD_LIBRARY_PATH` в
+базовом образе, поэтому в pre-build скриптах вызов обёрнут в `|| echo
+WARNING`. Внутри `dpkg`-триггера обойти нельзя — там кросс-сборка базового
+образа JetPack 6.2.2 под QEMU остаётся неработоспособной.
+
+**Рабочий путь для JP 6.2.2 — нативный ARM-раннер:**
+
+```
+Actions → base-images → Run workflow → runner_kind: github-arm
+```
+
+### `qemu: uncaught target signal 11` в `nvcc` или `cc1plus`
+
+Отличается от предыдущего: падает компилятор, а не `ldconfig`. Обычно лечится
+фиксацией версии QEMU (это делает `scripts/setup-qemu.sh`):
 
 ```bash
 docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64
@@ -27,39 +49,31 @@ docker run --privileged --rm tonistiigi/binfmt:qemu-v8.1.5 --install arm64
 
 ### `exec format error` при запуске arm64-образа
 
-binfmt не зарегистрирован в текущей сессии. После перезагрузки хоста
-регистрацию нужно повторить, если она не оформлена как systemd-юнит:
+binfmt не зарегистрирован в текущей сессии:
 
 ```bash
 make qemu
 ```
 
+**В WSL2 регистрация не переживает `wsl --shutdown` и перезагрузку Windows** —
+повторяйте `make qemu` в начале каждой сессии. `scripts/verify-image.sh`
+проверяет это заранее и сообщает явно, вместо серии невнятных FAIL.
+
 ### Сборку убивает OOM без внятного сообщения
 
-Признак: шаг падает с кодом 137, в логе обрывается компиляция.
-
-Под QEMU потребление памяти на поток кратно выше нативного. Уменьшите
-параллелизм:
+Код выхода 137, лог обрывается на компиляции. Под эмуляцией расход памяти на
+поток кратно выше нативного:
 
 ```bash
 PARALLEL_WORKERS=1 make package PACKAGE=fast_lio2 PLATFORM=jetson-orin-nano-jp7 MODE=cross
 ```
 
-На self-hosted Jetson-раннере добавьте swap:
-
-```bash
-sudo fallocate -l 16G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-```
-
 ### Кросс-сборка идёт неприлично долго
 
-Это нормально: под эмуляцией сборка медленнее нативной в 5–15 раз. Если время
-критично — используйте нативные ARM-раннеры:
-
-```
-Actions → package-build → Run workflow → include_native_arm: true
-```
+Норма. Замеры на этом проекте: базовый образ JP 7.2 на нативном ARM-раннере —
+10–15 мин при холодном кеше и ~5 мин при прогретом; та же сборка под QEMU на
+16-ядерном x86 — около часа. Пакет `fast_lio2` под QEMU: `colcon build` 26
+минут против 51 секунды нативно, то есть замедление примерно в 30 раз.
 
 ---
 
@@ -68,53 +82,93 @@ Actions → package-build → Run workflow → include_native_arm: true
 ### `E: Unable to locate package cuda-toolkit-12-6`
 
 Не подключился apt-репозиторий Jetson. Проверьте `L4T_SUITE` в
-`platforms/*.env`: он должен совпадать с суффиксом на устройстве.
+`platforms/*.env`. Соответствие: JP 6.2.2 → `r36.5`, JP 6.2.1 → `r36.4`,
+JP 7.2 → `r39.2`.
 
-```bash
-# на Jetson
-cat /etc/apt/sources.list.d/nvidia-l4t-apt-source.list
-cat /etc/nv_tegra_release
+### В JetPack 7 нет SoC-репозитория
+
+Для JP 6.x пакеты разнесены по `common` и SoC-ветке (`t234` для Orin). **Для
+r39.2 SoC-репозитория не существует.** Проверены все правдоподобные варианты —
+`t234`, `t264`, `t23x`, `t26x`, `sbsa`, `aarch64`, `orin`, `thor`, `generic` —
+все дают 404. Всё содержимое, включая `cuda-toolkit-13-2`, `libcudnn9-dev-cuda-13`
+и `libnvinfer-dev`, лежит в `common`.
+
+Поэтому в `platforms/jetson-orin-nano-jp7.env` задано `L4T_SOC=""`, а Dockerfile
+подключает SoC-ветку условно.
+
+### `File has unexpected size ... Mirror sync in progress?`
+
+```
+E: Failed to fetch https://repo.download.nvidia.com/jetson/common/dists/r39.2/main/binary-arm64/Packages.gz
+   File has unexpected size (63810 != 63578). Mirror sync in progress?
 ```
 
-Соответствие: JP 6.2.2 → `r36.5`, JP 6.2.1 → `r36.4`, JP 7.2 → `r39.2`.
-Суффиксы старых релизов из публичного репозитория удаляются после выхода
-следующего GA — если сборка внезапно перестала находить пакеты, проверьте,
-не устарел ли `L4T_SUITE`.
+Индексы на edge-узлах CDN NVIDIA расходятся между собой: разные узлы отдают
+разные версии `Packages.gz` при одном `Release`. Ошибка плавающая — при
+повторном запуске числа меняются местами. Усугубляется тем, что
+`/var/lib/apt/lists` смонтирован как cache-mount и хранит старый `Release`.
+
+Обход в `docker/package/Dockerfile`: списки сбрасываются перед обновлением,
+включены повторы, а неудача самого `apt-get update` не валит шаг — пакеты
+NVIDIA для `rosdep` и для сборочных зависимостей не нужны, они берутся из
+репозиториев Ubuntu и ROS.
 
 ### Установка L4T-пакета падает в postinst
 
-Обычно это отсутствие `/etc/nv_tegra_release`. Dockerfile создаёт его до
-`apt install`; если вы правили порядок слоёв — верните на место.
-
-Второй источник — попытка поставить `nvidia-l4t-core` или другие рантайм-пакеты
-BSP внутри контейнера. Их ставить не нужно и нельзя: NVIDIA Container Runtime
-подмонтирует их с хоста. В `JETSON_CUDA_PACKAGES` должны быть только
-dev-компоненты.
-
-### `nvcc: command not found` в собранном образе
-
-Проверьте симлинк `/usr/local/cuda` и `CUDA_HOME` в `platforms/*.env`: путь
-включает минорную версию (`/usr/local/cuda-12.6`, `/usr/local/cuda-13.2`).
+Обычно отсутствует `/etc/nv_tegra_release`. Dockerfile создаёт его до
+`apt install`. Не ставьте `nvidia-l4t-core` и другие рантайм-пакеты BSP внутри
+контейнера — их подмонтирует NVIDIA Container Runtime с хоста.
 
 ---
 
 ## Сборка пакетов
 
-### `livox_ros_driver2` не собирается / colcon его не видит
+### `LIVOX_INTERFACES_INCLUDE_DIRECTORIES ... set to NOTFOUND`
 
-В репозитории драйвера **нет `package.xml`** — есть `package_ROS1.xml` и
-`package_ROS2.xml`. Штатно нужный подкладывает `./build.sh humble`, но он
-запускает свой colcon на весь воркспейс, что ломает нашу схему. Это делает
-pre-build скрипт `packages/prebuild/livox_ros2_stack.sh`.
+```
+CMake Error: The following variables are used in this project, but they are set to NOTFOUND:
+  /opt/overlay/src/livox_ros_driver2/LIVOX_INTERFACES_INCLUDE_DIRECTORIES
+CMake Warning: Manually-specified variables were not used by the project:
+  HUMBLE_ROS
+```
 
-Если драйвер собирается, но падает на отсутствующем `roscpp` — не переданы
-`-DROS_EDITION=ROS2 -DHUMBLE_ROS=humble` (они в `PKG_CMAKE_ARGS` манифеста).
+Upstream `Livox-SDK/livox_ros_driver2` **не собирается штатным colcon**. Это
+незакрытый дефект самого драйвера, воспроизводится и вне нашей системы сборки,
+в том числе на Jazzy: см. issues
+[#131](https://github.com/Livox-SDK/livox_ros_driver2/issues/131) и
+[#223](https://github.com/Livox-SDK/livox_ros_driver2/issues/223).
+
+Показательна вторая строка: `HUMBLE_ROS` помечен как неиспользованный, то есть
+документированный способ выбора ROS-редакции в текущем master уже не работает.
+
+**Решение — форк [`Ericsii/livox_ros_driver2`](https://github.com/Ericsii/livox_ros_driver2)**,
+на который опирается большинство ROS 2-портов FAST-LIO. Он собирается обычным
+`colcon build`, без `build.sh`, без подмены `package.xml` и без
+`-DROS_EDITION`. Ветка по умолчанию — `feature/use-standard-unit`; она указана
+явно в `packages/fast_lio2.repos`.
+
+### `'is_convertible_v' is not a member of 'std'` при сборке на Jazzy
+
+```
+error: 'is_convertible_v' is not a member of 'std'; did you mean 'is_convertible'?
+   RCLCPP_INFO(this->get_logger(), "Initialize the map kdtree");
+```
+
+Ошибка возникает внутри макросов `RCLCPP_*`, то есть в заголовках rclcpp, а не
+в коде пакета. `std::is_convertible_v` появился в C++17, а `hku-mars/FAST_LIO`
+фиксирует стандарт C++14. В Humble заголовки rclcpp ещё компилировались под
+C++14, в Jazzy — нет.
+
+Подтверждено двумя независимыми прогонами (нативным и кросс) на
+`jetson-orin-nano-jp7`. Это несовместимость пакета с дистрибутивом, а не
+дефект системы сборки: FAST-LIO2 объявлен для Humble, что и зафиксировано в
+`SUPPORTED_ROS_DISTROS` манифеста.
 
 ### `Could not find a package configuration file provided by "catkin"`
 
-Собираемый пакет — ROS 1, а не ROS 2. Проверьте `<build_type>` в его
-`package.xml` и наличие ветки с портом. Так, у `hku-mars/FAST-LIVO2` ветки
-ROS 2 нет вообще — нужен форк сообщества.
+Собираемый пакет — ROS 1. Проверьте `<build_type>` в его `package.xml` и
+наличие ветки с портом. У `hku-mars/FAST-LIVO2` ветки ROS 2 нет вообще —
+нужен форк сообщества.
 
 ### Исполняемый файл «не найден» при верификации, хотя сборка прошла
 
@@ -122,11 +176,13 @@ colcon кладёт бинарники в `install/lib/<имя ROS-пакета>
 `install/lib/<имя образа>/`. Для FAST-LIO2 это `fast_lio`, а образ называется
 `fast_lio2`. Заполните `ROS_PACKAGE_NAME` в манифесте.
 
-### Предупреждение «пакет заявлен для ROS: humble, а платформа использует jazzy»
+### `AMENT_TRACE_SETUP_FILES: unbound variable`
 
-Ровно то, что написано: порт проверен только на Humble, а платформа JetPack 7
-использует Jazzy. Сборка не блокируется, но результат не гарантирован.
-Заполняется полем `SUPPORTED_ROS_DISTROS`.
+Скрипты ROS не совместимы с `set -u`. Оборачивайте sourcing:
+
+```bash
+set +u; source /opt/ros/${ROS_DISTRO}/setup.bash; set -u
+```
 
 ---
 
@@ -134,44 +190,33 @@ colcon кладёт бинарники в `install/lib/<имя ROS-пакета>
 
 ### `cudaGetDeviceCount failed: no CUDA-capable device is detected`
 
-На Jetson — забыт `--runtime nvidia`. `--gpus all` там **не работает**, это
-флаг для десктопного `nvidia-container-toolkit`:
+На Jetson забыт `--runtime nvidia`. Флаг `--gpus all` там **не работает**:
 
 ```bash
 sudo docker run --rm --runtime nvidia <image> ...
 ```
 
-Проверьте, что рантайм зарегистрирован:
-
-```bash
-docker info | grep -i runtime
-cat /etc/docker/daemon.json
-```
-
 ### `CUDA driver version is insufficient for CUDA runtime version`
 
-Версия CUDA в образе выше, чем драйвер на устройстве. Классический случай —
-образ, собранный под JetPack 7 (CUDA 13.2), запущен на JetPack 6.2.2
-(драйвер CUDA 12.6). Обратной совместимости здесь нет.
-
-Проверьте соответствие тега образа устройству:
+Версия CUDA в образе выше драйвера на устройстве. Классический случай — образ
+JetPack 7 (CUDA 13.2) на JetPack 6.2.2 (драйвер 12.6). Обратной совместимости
+нет.
 
 ```bash
-head -1 /etc/nv_tegra_release        # на устройстве
+head -1 /etc/nv_tegra_release
 docker inspect <image> --format '{{index .Config.Labels "ru.armmeh.l4t-suite"}}'
 ```
 
 ### `no kernel image is available for execution on the device`
 
-Device-код собран не под ту SM. Проверьте, что в образе:
+Device-код собран не под ту SM:
 
 ```bash
 docker run --rm --runtime nvidia <image> \
   cuobjdump --list-elf /opt/verify/install/lib/libcuda_verify_kernels.so
 ```
 
-Для любого Orin там должно быть `sm_87`. Если видите другое — не совпадает
-`CUDA_ARCHITECTURES` в описании платформы.
+Для любого Orin должно быть `sm_87`.
 
 ---
 
@@ -181,40 +226,48 @@ docker run --rm --runtime nvidia <image> \
 
 Settings → Actions → General → Workflow permissions → **Read and write**.
 
+### `403 Forbidden` при импорте registry-кеша
+
+```
+#8 importing cache manifest from ghcr.io/<owner>/ros2-cuda-base:<tag>-cache
+#8 ERROR: failed to authorize: ... 403 Forbidden
+```
+
+Ожидаемо при первой сборке: кеша в реестре ещё нет. Сборку не прерывает.
+
 ### `No space left on device` на раннере
 
-Штатный раннер даёт около 14 ГБ свободного места, базовый образ с CUDA легко
-занимает больше. Шаг «Освободить место на раннере» в workflow удаляет
-предустановленные .NET, Android SDK и Haskell — это освобождает ~25 ГБ.
-Если и этого мало, разнесите базовые образы по отдельным job'ам (уже сделано)
-или используйте larger runners.
+Штатный раннер даёт около 14 ГБ, базовый образ с CUDA занимает больше (JP 7.2
+с cuDNN и TensorRT — 10.3 ГБ). Шаг «Освободить место на раннере» удаляет
+предустановленные .NET, Android SDK и Haskell, освобождая ~25 ГБ.
+
+При необходимости набор `JETSON_CUDA_PACKAGES` можно сократить: если TensorRT
+не нужен, уберите `libnvinfer-dev` и `libnvinfer-plugin-dev` — это заметно
+уменьшит образ.
 
 ### Метки `ubuntu-24.04-arm` не работают
 
 ARM64-раннеры GitHub доступны бесплатно **только в публичных репозиториях**.
-В приватном workflow с такой меткой просто не стартует. Варианты: сделать
-репозиторий публичным, купить larger runners или использовать self-hosted
-раннер на Jetson.
 
 ### Кеш не срабатывает, каждая сборка идёт с нуля
 
-Registry-кеш пишется только при `--push` (иначе некуда). Локальные сборки
-кеш читают, но не обновляют. Проверьте, что `<image>-cache` существует в GHCR
-и доступен на чтение.
+Registry-кеш пишется только при `--push`. Локальные сборки кеш читают, но не
+обновляют. Прогретый кеш экономит много: повторная сборка базового образа
+JP 7.2 локально из registry-кеша заняла 33 секунды вместо часа.
 
 ---
 
 ## Диагностика
 
 ```bash
-# что вообще внутри образа
+# что внутри образа
 docker run --rm -it <image> bash
 nvcc --version
 ros2 pkg list | wc -l
 cuobjdump --list-elf /opt/verify/install/lib/libcuda_verify_kernels.so
 cat /opt/overlay/SOURCE_REVISION
 
-# какая ревизия пакета собрана, каким способом
+# ревизия пакета и способ сборки
 docker inspect <image> --format '{{json .Config.Labels}}' | jq
 
 # полный набор проверок
