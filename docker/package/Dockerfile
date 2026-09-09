@@ -51,7 +51,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # кеше /var/lib/apt/lists может лежать старый Release от сборки
         # базового образа. Сбрасываем списки и включаем повторы.
         rm -rf /var/lib/apt/lists/*; \
-        apt-get update -o Acquire::Retries=3; \
+        apt-get update -o Acquire::Retries=3 \
+          || apt-get update -o Acquire::Retries=3 \
+          || echo "WARNING: часть индексов apt не обновилась, продолжаем"; \
         apt-get install -y --no-install-recommends -o Acquire::Retries=3 ${APT_DEPS}; \
     fi
 
@@ -152,7 +154,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # кеше /var/lib/apt/lists может лежать старый Release от сборки
         # базового образа. Сбрасываем списки и включаем повторы.
         rm -rf /var/lib/apt/lists/*; \
-        apt-get update -o Acquire::Retries=3; \
+        apt-get update -o Acquire::Retries=3 \
+          || apt-get update -o Acquire::Retries=3 \
+          || echo "WARNING: часть индексов apt не обновилась, продолжаем"; \
         apt-get install -y --no-install-recommends -o Acquire::Retries=3 ${APT_DEPS}; \
     fi
 
