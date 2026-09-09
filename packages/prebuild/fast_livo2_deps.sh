@@ -37,6 +37,7 @@ cmake -S "${SRC}" -B "${SRC}/build" \
     -DBUILD_SOPHUS_EXAMPLES=OFF
 cmake --build "${SRC}/build" --parallel "${JOBS}"
 cmake --install "${SRC}/build"
-ldconfig
+# См. комментарий выше: под QEMU ldconfig падает, для сборки он не нужен.
+ldconfig || echo "WARNING: ldconfig завершился с ошибкой (известная проблема QEMU), продолжаем"
 rm -rf "${SRC}"
 echo ">>> Sophus установлен из исходников"

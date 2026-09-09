@@ -31,7 +31,11 @@ else
     cmake -S "${SRC}" -B "${SRC}/build" -DCMAKE_BUILD_TYPE=Release
     cmake --build "${SRC}/build" --parallel "${JOBS}"
     cmake --install "${SRC}/build"
-    ldconfig
+    # Под QEMU на jammy (glibc 2.35) ldconfig стабильно падает с SIGSEGV —
+    # это дефект эмуляции, а не сборки: на noble и на нативном ARM тот же
+    # вызов проходит. Кеш ld.so нам не нужен, пути к библиотекам заданы
+    # через LD_LIBRARY_PATH в базовом образе.
+    ldconfig || echo "WARNING: ldconfig завершился с ошибкой (известная проблема QEMU), продолжаем"
     rm -rf "${SRC}"
     echo ">>> Livox-SDK2 установлен"
 fi
