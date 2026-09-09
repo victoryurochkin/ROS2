@@ -67,12 +67,23 @@ jobs:
         run: |
           set -euo pipefail
           entries='[]'
+          # На каких ROS-дистрибутивах пакет заявлен рабочим. Платформы с
+          # другим дистрибутивом в матрицу не попадают: собирать заведомо
+          # несовместимое бессмысленно, а красный прогон скрывал бы реальные
+          # отказы. Пропуск виден в логе job'а plan.
+          pkg_distros="$( set -a; . "packages/${PACKAGE}.env" 2>/dev/null; set +a
+                          echo "${SUPPORTED_ROS_DISTROS:-}" )"
           add() { entries="$(jq -c --arg p "$1" --arg r "$2" --arg m "$3" \
                     '. + [{platform:$p, runner:$r, mode:$m}]' <<<"${entries}")"; }
           for f in platforms/*.env; do
             id="$(basename "$f" .env)"
             if [ -n "${ONLY}" ] && ! echo ",${ONLY}," | grep -q ",${id},"; then continue; fi
             set -a; source "$f"; set +a
+            if [ -n "${pkg_distros}" ] \
+               && ! printf ' %s ' "${pkg_distros}" | grep -q " ${ROS_DISTRO} "; then
+                echo "::notice title=Платформа пропущена::${id}: пакет ${PACKAGE} заявлен для ROS «${pkg_distros}», платформа использует ${ROS_DISTRO}"
+                continue
+            fi
             if [ "${DOCKER_PLATFORM}" = "linux/amd64" ]; then
               add "${id}" "ubuntu-24.04" "native"          # x86 нативно
             else
