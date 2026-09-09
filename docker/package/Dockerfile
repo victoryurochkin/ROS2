@@ -46,7 +46,13 @@ WORKDIR /opt/overlay
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     if [ -n "${APT_DEPS}" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends ${APT_DEPS}; \
+        # Индексы репозитория NVIDIA изредка расходятся с Release
+        # ("File has unexpected size ... Mirror sync in progress"), а в
+        # кеше /var/lib/apt/lists может лежать старый Release от сборки
+        # базового образа. Сбрасываем списки и включаем повторы.
+        rm -rf /var/lib/apt/lists/*; \
+        apt-get update -o Acquire::Retries=3; \
+        apt-get install -y --no-install-recommends -o Acquire::Retries=3 ${APT_DEPS}; \
     fi
 
 # --- 2. Зависимости из .repos (если объявлены) ----------------------------
@@ -133,7 +139,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     if [ -n "${APT_DEPS}" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends ${APT_DEPS}; \
+        # Индексы репозитория NVIDIA изредка расходятся с Release
+        # ("File has unexpected size ... Mirror sync in progress"), а в
+        # кеше /var/lib/apt/lists может лежать старый Release от сборки
+        # базового образа. Сбрасываем списки и включаем повторы.
+        rm -rf /var/lib/apt/lists/*; \
+        apt-get update -o Acquire::Retries=3; \
+        apt-get install -y --no-install-recommends -o Acquire::Retries=3 ${APT_DEPS}; \
     fi
 
 COPY --from=builder /opt/overlay/install /opt/overlay/install

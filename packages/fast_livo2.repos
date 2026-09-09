@@ -1,9 +1,16 @@
 # Зависимости FAST-LIVO2 (ROS 2-порт).
+#
+# Используется форк Ericsii, а не Livox-SDK/livox_ros_driver2: в upstream
+# сборка обычным colcon падает на CMake-ошибке
+#   LIVOX_INTERFACES_INCLUDE_DIRECTORIES ... set to NOTFOUND
+# Это известная незакрытая проблема (issues #131, #223), воспроизводится и
+# вне нашей системы сборки, в том числе на Jazzy. Форк Ericsii собирается
+# штатным colcon и используется большинством ROS 2-портов FAST-LIO.
 repositories:
   livox_ros_driver2:
     type: git
-    url: https://github.com/Livox-SDK/livox_ros_driver2.git
-    version: master
+    url: https://github.com/Ericsii/livox_ros_driver2.git
+    version: main
   # ament-версия vikit. Оригинал xuankuzcr/rpg_vikit — catkin-проект,
   # под ROS 2 не собирается.
   rpg_vikit:
