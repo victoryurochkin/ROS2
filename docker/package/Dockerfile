@@ -83,7 +83,15 @@ RUN --mount=type=cache,target=/root/.cache/git \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -euo pipefail; \
-    apt-get update; \
+    # Индексы repo.download.nvidia.com периодически расходятся между
+    # edge-узлами CDN ("File has unexpected size ... Mirror sync in
+    # progress"). Пакеты NVIDIA для rosdep не нужны — ROS-зависимости
+    # берутся из репозиториев Ubuntu и ROS, поэтому неудачное обновление
+    # одного источника не должно валить весь шаг.
+    rm -rf /var/lib/apt/lists/*; \
+    apt-get update -o Acquire::Retries=3 \
+      || apt-get update -o Acquire::Retries=3 \
+      || echo "WARNING: часть индексов apt не обновилась, продолжаем"; \
     # Скрипты ROS не совместимы с set -u: setup.bash читает
     # AMENT_TRACE_SETUP_FILES, которая по умолчанию не задана.
     set +u; source /opt/ros/${ROS_DISTRO}/setup.bash; set -u; \
