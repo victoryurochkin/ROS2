@@ -85,6 +85,38 @@ packages/prebuild/  ┘                                      │
 
 Подробности и примеры вывода — [docs/05-verification.md](docs/05-verification.md).
 
+## Результаты
+
+Базовые образы собраны и опубликованы. Прогон CI, которым они получены:
+[base-images #7](https://github.com/victoryurochkin/ROS2/actions/runs/34316829689) — три платформы, три из трёх job'ов зелёные,
+отчёты верификации лежат в артефактах прогона.
+
+| Образ | CUDA | ROS 2 | device-код в бинарнике |
+|---|---|---|---|
+| `ros2-cuda-base:x86_64-cuda` | 12.6 | Humble, 189 пакетов | `sm_75 sm_80 sm_86 sm_89 sm_90` |
+| `ros2-cuda-base:jetson-agx-orin-jp62` | 12.6 | Humble, 189 пакетов | `sm_87` |
+| `ros2-cuda-base:jetson-orin-nano-jp7` | 13.2 | Jazzy, 199 пакетов | `sm_87` |
+
+Последний столбец — вывод `cuobjdump --list-elf` по собранной библиотеке
+пакета `cuda_verify`, то есть device-код физически присутствует в образе и
+собран под целевую SM-архитектуру. Методика — [docs/05-verification.md](docs/05-verification.md).
+
+Образы публичные, скачиваются без авторизации:
+
+```bash
+docker pull ghcr.io/victoryurochkin/ros2-cuda-base:jetson-agx-orin-jp62
+```
+
+Проверить любой из них можно самостоятельно:
+
+```bash
+./scripts/verify-image.sh \
+  --image ghcr.io/victoryurochkin/ros2-cuda-base:jetson-orin-nano-jp7 \
+  --platform jetson-orin-nano-jp7
+```
+
+Для arm64-образа на x86-хосте предварительно нужен `make qemu`.
+
 ## Документация
 
 * [00 — Соответствие ТЗ (карта: требование → реализация)](docs/00-checklist.md)
