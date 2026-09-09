@@ -91,6 +91,16 @@ $*"
 }
 
 # ---------------------------------------------------------------------------
+# Для образа чужой архитектуры на этом хосте нужен QEMU: без него любая
+# команда внутри образа падает с "exec format error", и все проверки дают
+# невнятные FAIL. Сообщаем причину прямо.
+target_arch_check="$(printf '%s' "${DOCKER_PLATFORM}" | cut -d/ -f2)"
+case "$(uname -m)" in aarch64) host_arch_check=arm64 ;; *) host_arch_check=amd64 ;; esac
+if [ "${target_arch_check}" != "${host_arch_check}" ] \
+   && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+    die "образ ${target_arch_check} на хосте ${host_arch_check}, но QEMU не зарегистрирован — выполните: make qemu"
+fi
+
 log "=== СТАТИЧЕСКИЕ ПРОВЕРКИ ==="
 
 # 1. Архитектура образа
