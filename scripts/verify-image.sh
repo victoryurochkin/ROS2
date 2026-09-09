@@ -95,7 +95,13 @@ log "=== СТАТИЧЕСКИЕ ПРОВЕРКИ ==="
 
 # 1. Архитектура образа
 expected_arch="$(printf '%s' "${DOCKER_PLATFORM}" | cut -d/ -f2)"
-actual_arch="$(docker image inspect "${IMAGE}" --format '{{.Architecture}}' 2>/dev/null || echo unknown)"
+# Сначала пробуем локальное хранилище, затем реестр: при сборке с
+# --push --no-load (режим CI) образа на машине нет, и docker image
+# inspect вернул бы unknown. imagetools читает манифест из реестра.
+actual_arch="$(docker image inspect "${IMAGE}" --format '{{.Architecture}}' 2>/dev/null || true)"
+if [ -z "${actual_arch}" ] || [ "${actual_arch}" = "unknown" ]; then
+    actual_arch="$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Image.Architecture}}' 2>/dev/null || echo unknown)"
+fi
 if [ "${actual_arch}" = "${expected_arch}" ]; then
     record PASS "архитектура образа" "${actual_arch}"
 else
