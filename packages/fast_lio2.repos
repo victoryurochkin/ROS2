@@ -10,4 +10,5 @@ repositories:
   livox_ros_driver2:
     type: git
     url: https://github.com/Ericsii/livox_ros_driver2.git
-    version: main
+    # Ветка по умолчанию у этого форка называется именно так.
+    version: feature/use-standard-unit
